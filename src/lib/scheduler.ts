@@ -19,6 +19,11 @@ export interface ProcessMetrics {
   responseTime: number;
 }
 
+export interface SimulatorSettings {
+  contextSwitchTime: number;
+  tieBreaker: "PID" | "FIFO" | "LIFO";
+}
+
 export interface SimulationResult {
   executionLog: ExecBlock[];
   metrics: ProcessMetrics[];
@@ -38,6 +43,22 @@ export type Algorithm =
   | "RR"
   | "MLFQ";
 
+const getPidNum = (id: string): number => {
+  return parseInt(String(id).replace(/\D/g, "") || "0");
+};
+
+const getTieBreakerSorter = (strategy: "PID" | "FIFO" | "LIFO") => {
+  return (a: { id: string; arrivalTime: number }, b: { id: string; arrivalTime: number }) => {
+    if (strategy === "FIFO") {
+      return a.arrivalTime - b.arrivalTime || getPidNum(a.id) - getPidNum(b.id);
+    }
+    if (strategy === "LIFO") {
+      return b.arrivalTime - a.arrivalTime || getPidNum(a.id) - getPidNum(b.id);
+    }
+    return getPidNum(a.id) - getPidNum(b.id);
+  };
+};
+
 const computeMetrics = (
   processes: ProcessInput[],
   executionLog: ExecBlock[]
@@ -46,7 +67,7 @@ const computeMetrics = (
   const firstExecTimes: Record<string, number> = {};
 
   for (const block of executionLog) {
-    if (block.processId !== "IDLE") {
+    if (block.processId !== "IDLE" && block.processId !== "SWITCH") {
       completionTimes[block.processId] = Math.max(
         completionTimes[block.processId] || 0,
         block.endTime
@@ -94,19 +115,19 @@ const computeMetrics = (
 
   // CPU Utilization
   const totalTime = compressedLog.length > 0 ? compressedLog[compressedLog.length - 1].endTime : 0;
-  const idleTime = compressedLog
-    .filter((b) => b.processId === "IDLE")
+  const activeTime = compressedLog
+    .filter((b) => b.processId !== "IDLE" && b.processId !== "SWITCH")
     .reduce((a, b) => a + (b.endTime - b.startTime), 0);
-  const cpuUtilization = totalTime > 0 ? ((totalTime - idleTime) / totalTime) * 100 : 0;
+  const cpuUtilization = totalTime > 0 ? (activeTime / totalTime) * 100 : 0;
 
   // Throughput
   const throughput = totalTime > 0 ? processes.length / totalTime : 0;
 
-  // Context switches (count process transitions, ignoring IDLE)
+  // Context switches (count process transitions, ignoring IDLE and SWITCH)
   let contextSwitches = 0;
   let lastProcess: string | null = null;
   for (const block of compressedLog) {
-    if (block.processId !== "IDLE") {
+    if (block.processId !== "IDLE" && block.processId !== "SWITCH") {
       if (lastProcess !== null && lastProcess !== block.processId) {
         contextSwitches++;
       }
@@ -126,34 +147,53 @@ const computeMetrics = (
   };
 };
 
-export const simulateFCFS = (processes: ProcessInput[]): SimulationResult => {
+export const simulateFCFS = (
+  processes: ProcessInput[],
+  settings: SimulatorSettings
+): SimulationResult => {
   let currentTime = 0;
   const executionLog: ExecBlock[] = [];
 
   const sorted = [...processes].sort(
     (a, b) =>
       a.arrivalTime - b.arrivalTime ||
-      parseInt(String(a.id).replace(/\D/g, "") || "0") -
-        parseInt(String(b.id).replace(/\D/g, "") || "0")
+      getTieBreakerSorter(settings.tieBreaker)(a, b)
   );
 
+  let lastActiveId: string | null = null;
   for (const p of sorted) {
     if (currentTime < p.arrivalTime) {
       executionLog.push({ processId: "IDLE", startTime: currentTime, endTime: p.arrivalTime });
       currentTime = p.arrivalTime;
+      lastActiveId = null;
     }
+
+    if (lastActiveId !== null && lastActiveId !== p.id && settings.contextSwitchTime > 0) {
+      executionLog.push({
+        processId: "SWITCH",
+        startTime: currentTime,
+        endTime: currentTime + settings.contextSwitchTime,
+      });
+      currentTime += settings.contextSwitchTime;
+    }
+
     executionLog.push({ processId: p.id, startTime: currentTime, endTime: currentTime + p.burstTime });
     currentTime += p.burstTime;
+    lastActiveId = p.id;
   }
 
   return computeMetrics(processes, executionLog);
 };
 
-export const simulateSJF = (processes: ProcessInput[]): SimulationResult => {
+export const simulateSJF = (
+  processes: ProcessInput[],
+  settings: SimulatorSettings
+): SimulationResult => {
   let currentTime = 0;
   const executionLog: ExecBlock[] = [];
   const remaining = [...processes].map((p) => ({ ...p }));
 
+  let lastActiveId: string | null = null;
   while (remaining.length > 0) {
     const arrived = remaining.filter((p) => p.arrivalTime <= currentTime);
 
@@ -161,14 +201,29 @@ export const simulateSJF = (processes: ProcessInput[]): SimulationResult => {
       const nextArrival = Math.min(...remaining.map((p) => p.arrivalTime));
       executionLog.push({ processId: "IDLE", startTime: currentTime, endTime: nextArrival });
       currentTime = nextArrival;
+      lastActiveId = null;
       continue;
     }
 
-    arrived.sort((a, b) => a.burstTime - b.burstTime || a.arrivalTime - b.arrivalTime);
+    arrived.sort((a, b) => {
+      if (a.burstTime !== b.burstTime) return a.burstTime - b.burstTime;
+      if (a.arrivalTime !== b.arrivalTime) return a.arrivalTime - b.arrivalTime;
+      return getTieBreakerSorter(settings.tieBreaker)(a, b);
+    });
     const p = arrived[0];
+
+    if (lastActiveId !== null && lastActiveId !== p.id && settings.contextSwitchTime > 0) {
+      executionLog.push({
+        processId: "SWITCH",
+        startTime: currentTime,
+        endTime: currentTime + settings.contextSwitchTime,
+      });
+      currentTime += settings.contextSwitchTime;
+    }
 
     executionLog.push({ processId: p.id, startTime: currentTime, endTime: currentTime + p.burstTime });
     currentTime += p.burstTime;
+    lastActiveId = p.id;
 
     remaining.splice(
       remaining.findIndex((r) => r.id === p.id),
@@ -179,11 +234,15 @@ export const simulateSJF = (processes: ProcessInput[]): SimulationResult => {
   return computeMetrics(processes, executionLog);
 };
 
-export const simulatePriority = (processes: ProcessInput[]): SimulationResult => {
+export const simulatePriority = (
+  processes: ProcessInput[],
+  settings: SimulatorSettings
+): SimulationResult => {
   let currentTime = 0;
   const executionLog: ExecBlock[] = [];
   const remaining = [...processes].map((p) => ({ ...p }));
 
+  let lastActiveId: string | null = null;
   while (remaining.length > 0) {
     const arrived = remaining.filter((p) => p.arrivalTime <= currentTime);
 
@@ -191,14 +250,29 @@ export const simulatePriority = (processes: ProcessInput[]): SimulationResult =>
       const nextArrival = Math.min(...remaining.map((p) => p.arrivalTime));
       executionLog.push({ processId: "IDLE", startTime: currentTime, endTime: nextArrival });
       currentTime = nextArrival;
+      lastActiveId = null;
       continue;
     }
 
-    arrived.sort((a, b) => a.priority - b.priority || a.arrivalTime - b.arrivalTime);
+    arrived.sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority - b.priority;
+      if (a.arrivalTime !== b.arrivalTime) return a.arrivalTime - b.arrivalTime;
+      return getTieBreakerSorter(settings.tieBreaker)(a, b);
+    });
     const p = arrived[0];
+
+    if (lastActiveId !== null && lastActiveId !== p.id && settings.contextSwitchTime > 0) {
+      executionLog.push({
+        processId: "SWITCH",
+        startTime: currentTime,
+        endTime: currentTime + settings.contextSwitchTime,
+      });
+      currentTime += settings.contextSwitchTime;
+    }
 
     executionLog.push({ processId: p.id, startTime: currentTime, endTime: currentTime + p.burstTime });
     currentTime += p.burstTime;
+    lastActiveId = p.id;
 
     remaining.splice(
       remaining.findIndex((r) => r.id === p.id),
@@ -209,11 +283,18 @@ export const simulatePriority = (processes: ProcessInput[]): SimulationResult =>
   return computeMetrics(processes, executionLog);
 };
 
-export const simulateSRTF = (processes: ProcessInput[]): SimulationResult => {
+export const simulateSRTF = (
+  processes: ProcessInput[],
+  settings: SimulatorSettings
+): SimulationResult => {
   let currentTime = 0;
   const executionLog: ExecBlock[] = [];
   const remaining = processes.map((p) => ({ ...p, remainingTime: p.burstTime }));
 
+  let lastExecutedId: string | null = null;
+  let csRemaining = 0;
+  let csTargetId: string | null = null;
+
   while (remaining.length > 0) {
     const arrived = remaining.filter((p) => p.arrivalTime <= currentTime);
 
@@ -221,19 +302,49 @@ export const simulateSRTF = (processes: ProcessInput[]): SimulationResult => {
       const nextArrival = Math.min(...remaining.map((p) => p.arrivalTime));
       executionLog.push({ processId: "IDLE", startTime: currentTime, endTime: nextArrival });
       currentTime = nextArrival;
+      lastExecutedId = null;
+      csRemaining = 0;
+      csTargetId = null;
       continue;
     }
 
-    arrived.sort((a, b) => a.remainingTime - b.remainingTime || a.arrivalTime - b.arrivalTime);
-    const p = arrived[0];
+    if (csRemaining > 0) {
+      executionLog.push({ processId: "SWITCH", startTime: currentTime, endTime: currentTime + 1 });
+      currentTime += 1;
+      csRemaining -= 1;
+      if (csRemaining === 0) {
+        lastExecutedId = csTargetId;
+      }
+      continue;
+    }
 
-    executionLog.push({ processId: p.id, startTime: currentTime, endTime: currentTime + 1 });
-    p.remainingTime -= 1;
+    arrived.sort((a, b) => {
+      if (a.remainingTime !== b.remainingTime) return a.remainingTime - b.remainingTime;
+      if (a.arrivalTime !== b.arrivalTime) return a.arrivalTime - b.arrivalTime;
+      return getTieBreakerSorter(settings.tieBreaker)(a, b);
+    });
+    const best = arrived[0];
+
+    if (lastExecutedId !== null && lastExecutedId !== best.id && settings.contextSwitchTime > 0) {
+      csRemaining = settings.contextSwitchTime;
+      csTargetId = best.id;
+      executionLog.push({ processId: "SWITCH", startTime: currentTime, endTime: currentTime + 1 });
+      currentTime += 1;
+      csRemaining -= 1;
+      if (csRemaining === 0) {
+        lastExecutedId = csTargetId;
+      }
+      continue;
+    }
+
+    lastExecutedId = best.id;
+    executionLog.push({ processId: best.id, startTime: currentTime, endTime: currentTime + 1 });
+    best.remainingTime -= 1;
     currentTime += 1;
 
-    if (p.remainingTime === 0) {
+    if (best.remainingTime === 0) {
       remaining.splice(
-        remaining.findIndex((r) => r.id === p.id),
+        remaining.findIndex((r) => r.id === best.id),
         1
       );
     }
@@ -242,7 +353,11 @@ export const simulateSRTF = (processes: ProcessInput[]): SimulationResult => {
   return computeMetrics(processes, executionLog);
 };
 
-export const simulateRR = (processes: ProcessInput[], timeQuantum: number): SimulationResult => {
+export const simulateRR = (
+  processes: ProcessInput[],
+  timeQuantum: number,
+  settings: SimulatorSettings
+): SimulationResult => {
   let currentTime = 0;
   const executionLog: ExecBlock[] = [];
   const remaining = processes
@@ -254,7 +369,7 @@ export const simulateRR = (processes: ProcessInput[], timeQuantum: number): Simu
 
   const enqueueArrived = (time: number) => {
     const arrived = remainingProcesses.filter((p) => p.arrivalTime <= time);
-    arrived.sort((a, b) => a.arrivalTime - b.arrivalTime);
+    arrived.sort((a, b) => a.arrivalTime - b.arrivalTime || getTieBreakerSorter(settings.tieBreaker)(a, b));
     for (const p of arrived) {
       queue.push(p);
       remainingProcesses = remainingProcesses.filter((rp) => rp.id !== p.id);
@@ -263,26 +378,73 @@ export const simulateRR = (processes: ProcessInput[], timeQuantum: number): Simu
 
   enqueueArrived(currentTime);
 
-  while (queue.length > 0 || remainingProcesses.length > 0) {
-    if (queue.length === 0) {
+  let lastActiveId: string | null = null;
+  let csRemaining = 0;
+  let csTarget: typeof remaining[0] | null = null;
+  let currentRunning: typeof remaining[0] | null = null;
+  let currentQuantumLeft = 0;
+
+  while (queue.length > 0 || remainingProcesses.length > 0 || currentRunning !== null || csTarget !== null) {
+    if (queue.length === 0 && remainingProcesses.length > 0 && currentRunning === null && csTarget === null) {
       const nextArrival = remainingProcesses[0].arrivalTime;
       executionLog.push({ processId: "IDLE", startTime: currentTime, endTime: nextArrival });
       currentTime = nextArrival;
       enqueueArrived(currentTime);
+      lastActiveId = null;
       continue;
     }
 
-    const p = queue.shift()!;
-    const execTime = Math.min(p.remainingTime, timeQuantum);
+    if (csRemaining > 0) {
+      executionLog.push({ processId: "SWITCH", startTime: currentTime, endTime: currentTime + 1 });
+      currentTime += 1;
+      csRemaining -= 1;
+      enqueueArrived(currentTime);
+      if (csRemaining === 0) {
+        currentRunning = csTarget;
+        currentQuantumLeft = Math.min(currentRunning!.remainingTime, timeQuantum);
+        lastActiveId = currentRunning!.id;
+        csTarget = null;
+      }
+      continue;
+    }
 
-    executionLog.push({ processId: p.id, startTime: currentTime, endTime: currentTime + execTime });
-    currentTime += execTime;
-    p.remainingTime -= execTime;
+    if (currentRunning === null) {
+      if (queue.length > 0) {
+        const next = queue.shift()!;
+        if (lastActiveId !== null && lastActiveId !== next.id && settings.contextSwitchTime > 0) {
+          csRemaining = settings.contextSwitchTime;
+          csTarget = next;
+          executionLog.push({ processId: "SWITCH", startTime: currentTime, endTime: currentTime + 1 });
+          currentTime += 1;
+          csRemaining -= 1;
+          enqueueArrived(currentTime);
+          if (csRemaining === 0) {
+            currentRunning = csTarget;
+            currentQuantumLeft = Math.min(currentRunning!.remainingTime, timeQuantum);
+            lastActiveId = currentRunning!.id;
+            csTarget = null;
+          }
+        } else {
+          currentRunning = next;
+          currentQuantumLeft = Math.min(currentRunning.remainingTime, timeQuantum);
+          lastActiveId = currentRunning.id;
+        }
+      }
+      continue;
+    }
+
+    executionLog.push({ processId: currentRunning.id, startTime: currentTime, endTime: currentTime + 1 });
+    currentTime += 1;
+    currentRunning.remainingTime -= 1;
+    currentQuantumLeft -= 1;
 
     enqueueArrived(currentTime);
 
-    if (p.remainingTime > 0) {
-      queue.push(p);
+    if (currentRunning.remainingTime === 0) {
+      currentRunning = null;
+    } else if (currentQuantumLeft === 0) {
+      queue.push(currentRunning);
+      currentRunning = null;
     }
   }
 
@@ -292,7 +454,8 @@ export const simulateRR = (processes: ProcessInput[], timeQuantum: number): Simu
 export const simulateMLFQ = (
   processes: ProcessInput[],
   q0Quantum: number = 2,
-  q1Quantum: number = 4
+  q1Quantum: number = 4,
+  settings: SimulatorSettings
 ): SimulationResult => {
   let currentTime = 0;
   const executionLog: ExecBlock[] = [];
@@ -308,7 +471,7 @@ export const simulateMLFQ = (
 
   const enqueueArrived = (time: number) => {
     const arrived = notYetArrived.filter((p) => p.arrivalTime <= time);
-    arrived.sort((a, b) => a.arrivalTime - b.arrivalTime);
+    arrived.sort((a, b) => a.arrivalTime - b.arrivalTime || getTieBreakerSorter(settings.tieBreaker)(a, b));
     for (const p of arrived) {
       q0.push(p);
       notYetArrived = notYetArrived.filter((rp) => rp.id !== p.id);
@@ -317,57 +480,113 @@ export const simulateMLFQ = (
 
   enqueueArrived(currentTime);
 
-  while (q0.length > 0 || q1.length > 0 || q2.length > 0 || notYetArrived.length > 0) {
-    if (q0.length === 0 && q1.length === 0 && q2.length === 0) {
+  let lastActiveId: string | null = null;
+  let csRemaining = 0;
+  let csTarget: typeof remainingProcesses[0] | null = null;
+  let currentRunning: typeof remainingProcesses[0] | null = null;
+  let currentQuantumLeft = 0;
+  let currentQueueIndex = 0; // 0 for Q0, 1 for Q1, 2 for Q2
+
+  while (q0.length > 0 || q1.length > 0 || q2.length > 0 || notYetArrived.length > 0 || currentRunning !== null || csTarget !== null) {
+    if (q0.length === 0 && q1.length === 0 && q2.length === 0 && notYetArrived.length > 0 && currentRunning === null && csTarget === null) {
       const nextArrival = Math.min(...notYetArrived.map((p) => p.arrivalTime));
       executionLog.push({ processId: "IDLE", startTime: currentTime, endTime: nextArrival });
       currentTime = nextArrival;
       enqueueArrived(currentTime);
+      lastActiveId = null;
       continue;
     }
 
-    if (q0.length > 0) {
-      const p = q0.shift()!;
-      const execTime = Math.min(p.remainingTime, q0Quantum);
-
-      executionLog.push({ processId: p.id, startTime: currentTime, endTime: currentTime + execTime });
-      currentTime += execTime;
-      p.remainingTime -= execTime;
-
+    if (csRemaining > 0) {
+      executionLog.push({ processId: "SWITCH", startTime: currentTime, endTime: currentTime + 1 });
+      currentTime += 1;
+      csRemaining -= 1;
       enqueueArrived(currentTime);
-
-      if (p.remainingTime > 0) {
-        q1.push(p);
+      if (csRemaining === 0) {
+        currentRunning = csTarget;
+        lastActiveId = currentRunning!.id;
+        csTarget = null;
       }
-    } else if (q1.length > 0) {
-      const p = q1.shift()!;
-      let t = 0;
-      while (t < q1Quantum && p.remainingTime > 0) {
-        executionLog.push({ processId: p.id, startTime: currentTime, endTime: currentTime + 1 });
-        currentTime += 1;
-        p.remainingTime -= 1;
-        t += 1;
+      continue;
+    }
 
-        enqueueArrived(currentTime);
-        if (q0.length > 0) break;
+    if (currentRunning === null) {
+      let selected: typeof remainingProcesses[0] | null = null;
+      let qIdx = -1;
+
+      if (q0.length > 0) {
+        selected = q0.shift()!;
+        qIdx = 0;
+      } else if (q1.length > 0) {
+        selected = q1.shift()!;
+        qIdx = 1;
+      } else if (q2.length > 0) {
+        selected = q2.shift()!;
+        qIdx = 2;
       }
-      if (p.remainingTime > 0) {
-        if (t < q1Quantum) {
-          q1.unshift(p); // Preempted by Q0 before finishing quantum, resume in Q1
+
+      if (selected !== null) {
+        if (lastActiveId !== null && lastActiveId !== selected.id && settings.contextSwitchTime > 0) {
+          csRemaining = settings.contextSwitchTime;
+          csTarget = selected;
+          currentQueueIndex = qIdx;
+          if (qIdx === 0) currentQuantumLeft = Math.min(selected.remainingTime, q0Quantum);
+          else if (qIdx === 1) currentQuantumLeft = Math.min(selected.remainingTime, q1Quantum);
+          else currentQuantumLeft = selected.remainingTime;
+
+          executionLog.push({ processId: "SWITCH", startTime: currentTime, endTime: currentTime + 1 });
+          currentTime += 1;
+          csRemaining -= 1;
+          enqueueArrived(currentTime);
+          if (csRemaining === 0) {
+            currentRunning = csTarget;
+            lastActiveId = currentRunning!.id;
+            csTarget = null;
+          }
         } else {
-          q2.push(p); // Finished quantum, demote to Q2
+          currentRunning = selected;
+          currentQueueIndex = qIdx;
+          if (qIdx === 0) currentQuantumLeft = Math.min(selected.remainingTime, q0Quantum);
+          else if (qIdx === 1) currentQuantumLeft = Math.min(selected.remainingTime, q1Quantum);
+          else currentQuantumLeft = selected.remainingTime;
+          lastActiveId = selected.id;
         }
       }
-    } else if (q2.length > 0) {
-      const p = q2.shift()!;
-      executionLog.push({ processId: p.id, startTime: currentTime, endTime: currentTime + 1 });
-      currentTime += 1;
-      p.remainingTime -= 1;
+      continue;
+    }
 
-      enqueueArrived(currentTime);
-      if (p.remainingTime > 0) {
-        q2.unshift(p); // Preempted or just continuing FCFS tick-by-tick
+    let preempted = false;
+    if (currentQueueIndex === 1 && q0.length > 0) {
+      preempted = true;
+      q1.unshift(currentRunning);
+    } else if (currentQueueIndex === 2 && (q0.length > 0 || q1.length > 0)) {
+      preempted = true;
+      q2.unshift(currentRunning);
+    }
+
+    if (preempted) {
+      currentRunning = null;
+      continue;
+    }
+
+    executionLog.push({ processId: currentRunning.id, startTime: currentTime, endTime: currentTime + 1 });
+    currentTime += 1;
+    currentRunning.remainingTime -= 1;
+    if (currentQueueIndex < 2) {
+      currentQuantumLeft -= 1;
+    }
+
+    enqueueArrived(currentTime);
+
+    if (currentRunning.remainingTime === 0) {
+      currentRunning = null;
+    } else if (currentQueueIndex < 2 && currentQuantumLeft === 0) {
+      if (currentQueueIndex === 0) {
+        q1.push(currentRunning);
+      } else if (currentQueueIndex === 1) {
+        q2.push(currentRunning);
       }
+      currentRunning = null;
     }
   }
 
@@ -377,7 +596,8 @@ export const simulateMLFQ = (
 export const runSimulation = (
   processes: ProcessInput[],
   algo: Algorithm,
-  quantumMap: { rr: number; q0: number; q1: number }
+  quantumMap: { rr: number; q0: number; q1: number },
+  settings: SimulatorSettings = { contextSwitchTime: 0, tieBreaker: "PID" }
 ): SimulationResult => {
   if (processes.length === 0) {
     return {
@@ -394,23 +614,22 @@ export const runSimulation = (
 
   switch (algo) {
     case "FCFS":
-      return simulateFCFS(processes);
+      return simulateFCFS(processes, settings);
     case "SJF":
-      return simulateSJF(processes);
+      return simulateSJF(processes, settings);
     case "SRTF":
-      return simulateSRTF(processes);
+      return simulateSRTF(processes, settings);
     case "Priority":
-      return simulatePriority(processes);
+      return simulatePriority(processes, settings);
     case "RR":
-      return simulateRR(processes, quantumMap.rr);
+      return simulateRR(processes, quantumMap.rr, settings);
     case "MLFQ":
-      return simulateMLFQ(processes, quantumMap.q0, quantumMap.q1);
+      return simulateMLFQ(processes, quantumMap.q0, quantumMap.q1, settings);
     default:
-      return simulateFCFS(processes);
+      return simulateFCFS(processes, settings);
   }
 };
 
-// Helper: get process states at a given tick for visualization
 export function getStateAtTick(
   tick: number,
   processes: ProcessInput[],
@@ -423,11 +642,13 @@ export function getStateAtTick(
 } {
   const currentBlock = executionLog.find((b) => b.startTime <= tick && tick < b.endTime);
   const running =
-    currentBlock && currentBlock.processId !== "IDLE" ? currentBlock.processId : null;
+    currentBlock && currentBlock.processId !== "IDLE" && currentBlock.processId !== "SWITCH"
+      ? currentBlock.processId
+      : null;
 
   const executedTime: Record<string, number> = {};
   for (const block of executionLog) {
-    if (block.processId === "IDLE") continue;
+    if (block.processId === "IDLE" || block.processId === "SWITCH") continue;
     const effectiveEnd = Math.min(block.endTime, tick);
     if (effectiveEnd > block.startTime) {
       executedTime[block.processId] =

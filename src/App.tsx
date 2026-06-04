@@ -1,13 +1,16 @@
-import React, { useState, useMemo, useEffect, useCallback } from "react";
-import { Plus, Trash2, BarChart2, Play, Pause, SkipForward, SkipBack, RotateCcw, Download, Shuffle, ChevronDown, Info, Zap, Clock, Cpu, ArrowRightLeft } from "lucide-react";
-import { type ProcessInput, type Algorithm, runSimulation, getStateAtTick } from "./lib/scheduler";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, Legend, ResponsiveContainer } from "recharts";
+import React, { useState, useMemo, useEffect } from "react";
+import { Plus, Trash2, BarChart2, Play, Pause, SkipForward, SkipBack, RotateCcw, Download, Shuffle, ChevronDown, Info, Clock, Settings, LayoutGrid, Bell, Search, FolderOpen, FlaskConical } from "lucide-react";
+import { type ProcessInput, type Algorithm, type SimulatorSettings, runSimulation, getStateAtTick } from "./lib/scheduler";
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, Legend, ResponsiveContainer } from "recharts";
 import { ALGORITHMS, COLORS, ALGORITHM_INFO, PRESETS, generateRandomProcesses, exportCSV } from "./constants";
 import logoUrl from "./assets/logo.png";
+import Lab from "./Lab";
+import { type LabConfig, runLabSimulation } from "./lib/labScheduler";
 
 export default function App() {
+  const [view, setView] = useState<"dashboard" | "lab">("dashboard");
   const [processes, setProcesses] = useState<ProcessInput[]>([]);
-  const [algorithm, setAlgorithm] = useState<Algorithm>("FCFS");
+  const [algorithm, setAlgorithm] = useState<string>("FCFS");
   const [quantumRR, setQuantumRR] = useState(2);
   const [quantumQ0, setQuantumQ0] = useState(2);
   const [quantumQ1, setQuantumQ1] = useState(4);
@@ -16,222 +19,703 @@ export default function App() {
   const [newPri, setNewPri] = useState(1);
   const [showInfo, setShowInfo] = useState(true);
   const [showPresets, setShowPresets] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [tick, setTick] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
+  const [customAlgorithms, setCustomAlgorithms] = useState<LabConfig[]>([]);
+  const [selectedCompAlgos, setSelectedCompAlgos] = useState<string[]>([
+    "FCFS", "SJF", "SRTF", "Priority", "RR", "MLFQ"
+  ]);
 
-  const result = useMemo(() => runSimulation(processes, algorithm, { rr: quantumRR, q0: quantumQ0, q1: quantumQ1 }), [processes, algorithm, quantumRR, quantumQ0, quantumQ1]);
+  const removeCustomAlgorithm = (name: string) => {
+    setCustomAlgorithms((prev) => prev.filter((a) => a.name !== name));
+    setSelectedCompAlgos((prev) => prev.filter((x) => x !== name));
+    if (algorithm === name) {
+      setAlgorithm("FCFS");
+    }
+  };
+
+  const [settings, setSettings] = useState<SimulatorSettings>({
+    contextSwitchTime: 0,
+    tieBreaker: "PID",
+  });
+
+  const result = useMemo(() => {
+    const customAlgo = customAlgorithms.find((ca) => ca.name === algorithm);
+    if (customAlgo) {
+      return runLabSimulation(processes, customAlgo);
+    }
+    return runSimulation(processes, algorithm as Algorithm, { rr: quantumRR, q0: quantumQ0, q1: quantumQ1 }, settings);
+  }, [processes, algorithm, quantumRR, quantumQ0, quantumQ1, settings, customAlgorithms]);
+  
   const totalTime = result.executionLog.length > 0 ? result.executionLog[result.executionLog.length - 1].endTime : 0;
-  const compData = useMemo(() => ALGORITHMS.map(a => { const r = runSimulation(processes, a, { rr: quantumRR, q0: quantumQ0, q1: quantumQ1 }); return { name: a, avgTAT: +r.avgTurnaroundTime.toFixed(2), avgWT: +r.avgWaitingTime.toFixed(2) }; }), [processes, quantumRR, quantumQ0, quantumQ1]);
-  const pColors = useMemo(() => { const m: Record<string, string> = {}; processes.forEach((p, i) => m[p.id] = COLORS[i % COLORS.length]); m["IDLE"] = "transparent"; return m; }, [processes]);
+  
+  const compData = useMemo(() => {
+    const data: Array<{ name: string; avgTAT: number; avgWT: number }> = [];
+    
+    ALGORITHMS.forEach((a) => {
+      if (selectedCompAlgos.includes(a)) {
+        const r = runSimulation(processes, a, { rr: quantumRR, q0: quantumQ0, q1: quantumQ1 }, settings);
+        data.push({ name: a, avgTAT: +r.avgTurnaroundTime.toFixed(2), avgWT: +r.avgWaitingTime.toFixed(2) });
+      }
+    });
+
+    customAlgorithms.forEach((ca) => {
+      if (selectedCompAlgos.includes(ca.name)) {
+        const r = runLabSimulation(processes, ca);
+        data.push({
+          name: ca.name,
+          avgTAT: +r.avgTurnaroundTime.toFixed(2),
+          avgWT: +r.avgWaitingTime.toFixed(2),
+        });
+      }
+    });
+    
+    return data;
+  }, [processes, quantumRR, quantumQ0, quantumQ1, settings, customAlgorithms, selectedCompAlgos]);
+  
+  const pColors = useMemo(() => {
+    const m: Record<string, string> = {};
+    processes.forEach((p, i) => (m[p.id] = COLORS[i % COLORS.length]));
+    m["IDLE"] = "transparent";
+    m["SWITCH"] = "transparent";
+    return m;
+  }, [processes]);
+  
   const state = useMemo(() => getStateAtTick(tick, processes, result.executionLog), [tick, processes, result]);
-  const info = ALGORITHM_INFO[algorithm];
+  
+  const info = useMemo(() => {
+    const customAlgo = customAlgorithms.find((ca) => ca.name === algorithm);
+    if (customAlgo) {
+      return {
+        name: customAlgo.name,
+        type: customAlgo.rules.some((r) => r.preemptive) ? "Preemptive" : "Non-Preemptive",
+        desc: `Custom hybrid algorithm composed of rules: ${customAlgo.rules.map((r) => r.type).join(" → ")}.`,
+      };
+    }
+    return ALGORITHM_INFO[algorithm as Algorithm];
+  }, [algorithm, customAlgorithms]);
+
   const showPri = algorithm === "Priority" || algorithm === "MLFQ";
 
-  useEffect(() => { setTick(0); setPlaying(false); }, [processes, algorithm, quantumRR, quantumQ0, quantumQ1]);
-  useEffect(() => { if (!playing) return; const id = setInterval(() => setTick(t => { if (t >= totalTime) { setPlaying(false); return t; } return t + 1; }), 500 / speed); return () => clearInterval(id); }, [playing, speed, totalTime]);
+  useEffect(() => {
+    setTick(0);
+    setPlaying(false);
+  }, [processes, algorithm, quantumRR, quantumQ0, quantumQ1, settings]);
 
-  const addProcess = (e: React.FormEvent) => { e.preventDefault(); setProcesses([...processes, { id: `P${processes.length + 1}`, arrivalTime: newArr, burstTime: newBur, priority: newPri }]); setNewArr(newArr + 1); };
-  const removeProcess = (id: string) => { setProcesses(processes.filter(p => p.id !== id)); };
-  const loadPreset = (key: string) => { setProcesses(PRESETS[key].processes); setShowPresets(false); };
+  useEffect(() => {
+    if (!playing) return;
+    const id = setInterval(() => {
+      setTick((t) => {
+        if (t >= totalTime) {
+          setPlaying(false);
+          return t;
+        }
+        return t + 1;
+      });
+    }, 500 / speed);
+    return () => clearInterval(id);
+  }, [playing, speed, totalTime]);
+
+  const addProcess = (e: React.FormEvent) => {
+    e.preventDefault();
+    setProcesses([...processes, { id: `P${processes.length + 1}`, arrivalTime: newArr, burstTime: newBur, priority: newPri }]);
+    setNewArr(newArr + 1);
+  };
+  
+  const removeProcess = (id: string) => {
+    setProcesses(processes.filter((p) => p.id !== id));
+  };
+  
+  const loadPreset = (key: string) => {
+    setProcesses(PRESETS[key].processes);
+    setShowPresets(false);
+  };
+
+  if (view === "lab") {
+    return (
+      <Lab
+        onBack={() => setView("dashboard")}
+        onSaveAlgorithm={(algo) => {
+          setCustomAlgorithms((prev) => {
+            const filtered = prev.filter((a) => a.name !== algo.name);
+            return [...filtered, algo];
+          });
+        }}
+      />
+    );
+  }
 
   return (
-    <div className="h-screen bg-[#0A0A0B] text-[#E4E4E7] flex flex-col overflow-hidden" style={{ fontFamily: "'Inter', sans-serif" }}>
-      {/* HEADER */}
-      <header className="h-14 border-b border-[#27272A] flex items-center justify-between px-5 bg-[#121214] shrink-0">
-        <div className="flex items-center gap-3">
-          <img src={logoUrl} alt="Logo" className="w-8 h-8 object-contain drop-shadow-[0_0_8px_rgba(59,130,246,0.5)]" />
-          <h1 className="text-xl font-black tracking-tighter text-white">CPU<span className="text-[#3B82F6]">Sim</span>.OS</h1>
-          <div className="h-5 w-px bg-[#27272A]"/>
-          <span className="px-2 py-0.5 bg-[#27272A] border border-[#3F3F46] rounded text-[9px] font-bold uppercase tracking-wider text-[#A1A1AA]">{algorithm}</span>
-          <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider ${info.type === "Preemptive" ? "bg-[#1a2e1a] border border-emerald-800 text-emerald-400" : "bg-[#2e2a1a] border border-yellow-800 text-yellow-400"}`}>{info.type}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => setProcesses(generateRandomProcesses(Math.floor(Math.random()*5)+3))} className="flex items-center gap-1 px-3 py-1.5 bg-[#18181B] border border-[#3F3F46] rounded text-[10px] font-bold text-[#A1A1AA] hover:bg-[#27272A] transition-colors"><Shuffle className="w-3 h-3"/>Random</button>
-          <div className="relative">
-            <button onClick={() => setShowPresets(!showPresets)} className="flex items-center gap-1 px-3 py-1.5 bg-[#18181B] border border-[#3F3F46] rounded text-[10px] font-bold text-[#A1A1AA] hover:bg-[#27272A] transition-colors"><ChevronDown className="w-3 h-3"/>Presets</button>
-            {showPresets && <div className="absolute right-0 top-full mt-1 bg-[#18181B] border border-[#3F3F46] rounded shadow-xl z-50 min-w-[140px]">{Object.entries(PRESETS).map(([k,v]) => <button key={k} onClick={() => loadPreset(k)} className="block w-full text-left px-3 py-2 text-[11px] text-[#A1A1AA] hover:bg-[#27272A] transition-colors">{v.name}</button>)}</div>}
-          </div>
-          <button onClick={() => exportCSV(result, processes)} className="flex items-center gap-1 px-3 py-1.5 bg-[#18181B] border border-[#3F3F46] rounded text-[10px] font-bold text-[#A1A1AA] hover:bg-[#27272A] transition-colors"><Download className="w-3 h-3"/>CSV</button>
-        </div>
-      </header>
+    <div className="min-h-screen md:h-screen w-screen bg-[#f0f2f5] p-0 flex items-center justify-center overflow-y-auto md:overflow-hidden" style={{ fontFamily: "'Inter', sans-serif" }}>
+      <div className="w-full h-full min-h-screen md:min-h-0 bg-[#f8fafc] rounded-none border-0 flex flex-col md:flex-row overflow-y-auto md:overflow-hidden">
+        
 
-      <main className="flex-1 flex overflow-hidden p-4 gap-4">
-        {/* SIDEBAR */}
-        <aside className="w-72 flex flex-col gap-3 overflow-y-auto pr-1 custom-scrollbar shrink-0">
-          {/* Config */}
-          <div className="glass-card rounded-xl p-4 flex flex-col gap-3">
-            <h2 className="text-[9px] font-black uppercase tracking-[0.2em] text-[#71717A]">Configuration</h2>
-            <div className="flex flex-col gap-1">
-              <label className="text-[9px] font-bold uppercase text-[#52525B]">Algorithm</label>
-              <select value={algorithm} onChange={e => setAlgorithm(e.target.value as Algorithm)} className="w-full bg-[#18181B] border border-[#3F3F46] rounded text-xs p-2 text-white outline-none focus:border-[#3B82F6] transition-colors">{ALGORITHMS.map(a => <option key={a} value={a}>{a} — {ALGORITHM_INFO[a].name}</option>)}</select>
-            </div>
-            {algorithm === "RR" && <div className="flex flex-col gap-1"><label className="text-[9px] font-bold uppercase text-[#52525B]">Time Quantum</label><input type="number" min="1" value={quantumRR} onChange={e => setQuantumRR(+e.target.value)} className="w-full bg-[#18181B] border border-[#3F3F46] rounded text-xs p-2 text-white outline-none focus:border-[#3B82F6]"/></div>}
-            {algorithm === "MLFQ" && <div className="flex gap-2">{[["Q0",quantumQ0,setQuantumQ0],["Q1",quantumQ1,setQuantumQ1]].map(([l,v,s]: any) => <div key={l} className="flex-1 flex flex-col gap-1"><label className="text-[9px] font-bold uppercase text-[#52525B]">{l} Quantum</label><input type="number" min="1" value={v} onChange={e => s(+e.target.value)} className="w-full bg-[#18181B] border border-[#3F3F46] rounded text-xs p-2 text-white outline-none focus:border-[#3B82F6]"/></div>)}</div>}
-          </div>
 
-          {/* Process List */}
-          <div className="glass-card rounded-xl p-4 flex flex-col gap-2">
-            <h2 className="text-[9px] font-black uppercase tracking-[0.2em] text-[#71717A]">Process Workload</h2>
-            <div className={`grid ${showPri ? 'grid-cols-5' : 'grid-cols-4'} gap-1 text-[8px] uppercase font-bold text-[#52525B] px-1`}>
-              <span>ID</span><span className="text-center">ARR</span><span className="text-center">BRST</span>{showPri && <span className="text-center">PRI</span>}<span/>
+        {/* MAIN CONTAINER */}
+        <div className="flex-1 flex flex-col md:overflow-hidden min-w-0">
+          {/* HEADER */}
+          <header className="h-16 border-b border-slate-100 flex items-center justify-between px-4 md:px-8 bg-white shrink-0">
+            <div className="flex items-center gap-4">
+              <img src={logoUrl} alt="CPUsim Logo" className="h-10 object-contain" />
+              <div className="h-5 w-px bg-slate-200 mx-2" />
+              <span className="text-xs font-bold uppercase tracking-wider text-[#94a3b8]">Scheduler Core</span>
             </div>
-            {processes.map((p) => (
-              <div key={p.id} className={`p-1.5 bg-[#18181B] border border-[#27272A] rounded flex items-center group ${showPri ? 'grid grid-cols-5' : 'grid grid-cols-4'} gap-1 text-xs`}>
-                <span className="font-bold font-mono" style={{ color: pColors[p.id] }}>{p.id}</span>
-                <span className="text-center text-zinc-400 font-mono">{p.arrivalTime}</span>
-                <span className="text-center text-zinc-400 font-mono">{p.burstTime}</span>
-                {showPri && <span className="text-center text-zinc-400 font-mono">{p.priority}</span>}
-                <button onClick={() => removeProcess(p.id)} disabled={processes.length<=1} className="ml-auto bg-[#3F3F46] hover:bg-[#EF4444] text-white p-0.5 rounded opacity-0 group-hover:opacity-100 transition-all disabled:hidden"><Trash2 className="w-3 h-3"/></button>
+            
+            {/* Center navigation links */}
+            <div className="hidden sm:flex items-center gap-6 text-[13px] font-bold">
+              <span className="px-3 py-1.5 bg-[#f1f5f9] text-[#00875a] rounded-none cursor-pointer">Dashboard</span>
+              <span className="text-[#94a3b8] hover:text-[#475569] cursor-pointer transition-colors" onClick={() => setShowSettings(true)}>Settings</span>
+              <span className="text-[#94a3b8] hover:text-[#475569] cursor-pointer transition-colors" onClick={() => exportCSV(result, processes)}>Export</span>
+            </div>
+            <div className="flex items-center gap-2 md:gap-4">
+              <button onClick={() => setView("lab")} className="w-8 h-8 flex items-center justify-center bg-amber-50 hover:bg-amber-100 text-[#d97706] transition-colors" title="Algorithm Lab">
+                <FlaskConical className="w-4 h-4" />
+              </button>
+            </div>
+          </header>
+
+          {/* SETTINGS MODAL */}
+          {showSettings && (
+            <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center animate-fade-in">
+              <div className="glass-card w-[340px] rounded-none p-5 flex flex-col gap-4">
+                <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+                  <div className="flex items-center gap-2">
+                    <Settings className="w-4 h-4 text-[#00875a]" />
+                    <h3 className="text-xs font-bold text-[#1e293b] uppercase tracking-wider">Simulation Settings</h3>
+                  </div>
+                  <button onClick={() => setShowSettings(false)} className="text-[#94a3b8] hover:text-[#1e293b] text-sm">✕</button>
+                </div>
+                
+                {/* Context Switch */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold uppercase text-[#94a3b8]">Context Switch Overhead</label>
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="range"
+                      min={0}
+                      max={5}
+                      value={settings.contextSwitchTime}
+                      onChange={(e) => setSettings({ ...settings, contextSwitchTime: parseInt(e.target.value) })}
+                      className="flex-1"
+                    />
+                    <span className="text-xs font-mono font-bold text-[#00875a] min-w-[20px] text-right">{settings.contextSwitchTime}</span>
+                  </div>
+                  <span className="text-[9px] text-[#94a3b8]">Ticks delay added when switching executing processes.</span>
+                </div>
+
+                {/* Tie Breaker */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold uppercase text-[#94a3b8]">Tie-Breaker Strategy</label>
+                  <select
+                    value={settings.tieBreaker}
+                    onChange={(e) => setSettings({ ...settings, tieBreaker: e.target.value as any })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-none text-xs p-2 text-[#1e293b] outline-none focus:border-[#00875a] transition-colors"
+                  >
+                    <option value="PID">Smallest PID (P1 &lt; P2)</option>
+                    <option value="FIFO">FIFO (First Arrived)</option>
+                    <option value="LIFO">LIFO (Last Arrived)</option>
+                  </select>
+                  <span className="text-[9px] text-[#94a3b8]">Determines which process runs if arrival times and selection criteria are equal.</span>
+                </div>
+
+                <button
+                  onClick={() => setShowSettings(false)}
+                  className="w-full py-2 bg-[#00875a] hover:bg-[#00704a] text-white text-xs font-bold rounded-none transition-colors mt-2"
+                >
+                  Apply Settings
+                </button>
               </div>
-            ))}
-            <form onSubmit={addProcess} className="flex flex-col gap-1 mt-1">
-              <div className={`p-1.5 bg-[#18181B] border border-[#27272A] rounded ${showPri ? 'grid grid-cols-5' : 'grid grid-cols-4'} gap-1 items-center`}>
-                <span className="text-[#52525B] font-mono font-bold text-[10px]">NEW</span>
-                <input type="number" min="0" value={newArr} onChange={e => setNewArr(+e.target.value)} className="w-full bg-black border border-[#3F3F46] rounded text-center text-xs p-1 text-white outline-none focus:border-[#3B82F6]" required/>
-                <input type="number" min="1" value={newBur} onChange={e => setNewBur(+e.target.value)} className="w-full bg-black border border-[#3F3F46] rounded text-center text-xs p-1 text-white outline-none focus:border-[#3B82F6]" required/>
-                {showPri && <input type="number" min="1" value={newPri} onChange={e => setNewPri(+e.target.value)} className="w-full bg-black border border-[#3F3F46] rounded text-center text-xs p-1 text-white outline-none focus:border-[#3B82F6]" required/>}
-              </div>
-              <button type="submit" className="w-full py-1.5 flex items-center justify-center gap-1 border-2 border-dashed border-[#27272A] rounded text-[10px] font-bold uppercase text-[#71717A] hover:bg-[#18181B] hover:text-[#A1A1AA] transition-colors"><Plus className="w-3 h-3"/>Add Process</button>
-            </form>
-          </div>
-
-          {/* Stats */}
-          <div className="bg-gradient-to-br from-[#1E3A8A] to-[#1E1B4B] rounded-xl border border-[#3B82F6]/20 p-4 flex flex-col gap-3 mt-auto shrink-0">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="text-center"><div className="text-[8px] font-bold uppercase tracking-wider text-blue-300">Avg Wait</div><div className="text-2xl font-black text-white">{result.avgWaitingTime.toFixed(2)}</div></div>
-              <div className="text-center"><div className="text-[8px] font-bold uppercase tracking-wider text-blue-300">Avg TAT</div><div className="text-2xl font-black text-white">{result.avgTurnaroundTime.toFixed(2)}</div></div>
-              <div className="text-center"><div className="text-[8px] font-bold uppercase tracking-wider text-blue-300">Avg Response</div><div className="text-2xl font-black text-white">{result.avgResponseTime.toFixed(2)}</div></div>
-              <div className="text-center"><div className="text-[8px] font-bold uppercase tracking-wider text-blue-300">CPU Util</div><div className="text-2xl font-black text-white">{result.cpuUtilization.toFixed(0)}%</div></div>
-            </div>
-            <div className="flex justify-between text-[9px] text-blue-300/70 font-mono border-t border-blue-500/20 pt-2">
-              <span>Throughput: {result.throughput.toFixed(3)}/ms</span>
-              <span>Ctx Switches: {result.contextSwitches}</span>
-            </div>
-          </div>
-        </aside>
-
-        {/* MAIN */}
-        <section className="flex-1 flex flex-col gap-4 overflow-y-auto pr-1 custom-scrollbar min-w-0">
-          {/* Algorithm Info */}
-          {showInfo && (
-            <div className="glass-card rounded-xl p-4 flex items-start gap-3 animate-slide-up">
-              <Info className="w-5 h-5 text-[#3B82F6] shrink-0 mt-0.5"/>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1"><span className="text-sm font-bold text-white">{info.name}</span><span className={`text-[8px] px-1.5 py-0.5 rounded font-bold uppercase ${info.type==="Preemptive"?"bg-emerald-900/40 text-emerald-400":"bg-yellow-900/40 text-yellow-400"}`}>{info.type}</span></div>
-                <p className="text-[11px] text-[#A1A1AA] leading-relaxed">{info.desc}</p>
-              </div>
-              <button onClick={() => setShowInfo(false)} className="text-[#52525B] hover:text-white text-xs">✕</button>
             </div>
           )}
-          {!showInfo && <button onClick={() => setShowInfo(true)} className="text-[9px] text-[#52525B] hover:text-[#A1A1AA] self-start transition-colors">Show algorithm info ↓</button>}
 
-          {/* Gantt */}
-          <div className="glass-card rounded-xl p-4 flex flex-col gap-3">
-            <div className="flex justify-between items-center">
-              <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-[#71717A]">Gantt Chart Timeline</h2>
-              <div className="flex items-center gap-1">
-                <button onClick={() => setTick(t => Math.max(0, t-1))} className="p-1 rounded hover:bg-[#27272A] text-[#71717A] transition-colors"><SkipBack className="w-3.5 h-3.5"/></button>
-                <button onClick={() => { if (tick >= totalTime) setTick(0); setPlaying(!playing); }} className={`p-1.5 rounded transition-colors ${playing ? "bg-[#3B82F6] text-white" : "hover:bg-[#27272A] text-[#71717A]"}`}>{playing ? <Pause className="w-3.5 h-3.5"/> : <Play className="w-3.5 h-3.5"/>}</button>
-                <button onClick={() => setTick(t => Math.min(totalTime, t+1))} className="p-1 rounded hover:bg-[#27272A] text-[#71717A] transition-colors"><SkipForward className="w-3.5 h-3.5"/></button>
-                <button onClick={() => { setTick(0); setPlaying(false); }} className="p-1 rounded hover:bg-[#27272A] text-[#71717A] transition-colors"><RotateCcw className="w-3.5 h-3.5"/></button>
-                <select value={speed} onChange={e => setSpeed(+e.target.value)} className="bg-[#18181B] border border-[#3F3F46] rounded text-[10px] px-1.5 py-0.5 text-[#A1A1AA] ml-1">{[1,2,4,8].map(s => <option key={s} value={s}>{s}x</option>)}</select>
-                <span className="text-[10px] font-mono text-[#52525B] ml-2">t={tick}/{totalTime}</span>
-              </div>
-            </div>
-
-            {result.executionLog.length > 0 ? (
-              <div className="relative h-20 bg-black/40 border border-[#27272A] rounded-lg overflow-hidden flex">
-                {totalTime > 0 && <div className="gantt-cursor" style={{ left: `${(tick / totalTime) * 100}%`, transition: playing ? "none" : "left 0.15s ease" }}/>}
-                {result.executionLog.map((b, i) => {
-                  const w = ((b.endTime - b.startTime) / totalTime) * 100;
-                  const idle = b.processId === "IDLE";
-                  const past = b.endTime <= tick;
-                  const active = b.startTime <= tick && tick < b.endTime;
-                  const future = b.startTime > tick;
-                  return (
-                    <div key={`${b.processId}-${b.startTime}-${i}`} style={{ width: `${w}%`, backgroundColor: idle ? "transparent" : pColors[b.processId], opacity: past ? 0.9 : active ? 1 : 0.15 }} className={`h-full border-r border-black/20 flex flex-col items-center justify-center transition-opacity duration-200 ${idle ? "border border-dashed border-[#27272A]" : ""} ${active && !idle ? "ring-1 ring-[#3B82F6] ring-inset" : ""}`} title={`${b.processId}: ${b.startTime}→${b.endTime}`}>
-                      {!idle && w > 3 && <><span className="text-[9px] font-bold text-white drop-shadow-sm">{b.processId}</span><span className="text-[7px] text-white/70 font-mono">{b.startTime}-{b.endTime}</span></>}
-                      {idle && w > 3 && <span className="text-[7px] font-bold text-[#52525B] uppercase">Idle</span>}
+          {/* CONTENT AREA */}
+          <main className="flex-1 flex flex-col p-4 md:p-8 overflow-y-auto gap-6 bg-[#f8fafc] custom-scrollbar">
+            {/* Title / Action row */}
+            <div className="flex justify-end items-center gap-4 shrink-0">
+              <div className="flex items-center gap-3">
+                {/* Presets Button Wrapper */}
+                <div className="relative">
+                  <button 
+                    onClick={() => setShowPresets(!showPresets)} 
+                    className="btn-ghost text-xs font-bold px-4 py-2 rounded-none flex items-center gap-1.5"
+                  >
+                    <ChevronDown className="w-4 h-4" /> Load Workload Preset
+                  </button>
+                  {showPresets && (
+                    <div className="preset-dropdown mt-2">
+                      {Object.entries(PRESETS).map(([k, v]) => (
+                        <button key={k} onClick={() => loadPreset(k)}>
+                          {v.name}
+                        </button>
+                      ))}
                     </div>
-                  );
-                })}
-              </div>
-            ) : <div className="h-20 bg-black/40 border border-dashed border-[#27272A] rounded-lg flex items-center justify-center"><span className="text-[10px] font-bold uppercase text-[#52525B]">No data</span></div>}
-
-            {/* Playback slider */}
-            <input type="range" min={0} max={totalTime} value={tick} onChange={e => { setTick(+e.target.value); setPlaying(false); }} className="w-full"/>
-
-            {/* Ready Queue Viz */}
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-[8px] font-bold uppercase tracking-wider text-[#52525B]">State @t={tick}:</span>
-              {state.running && <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-bold text-white" style={{ backgroundColor: pColors[state.running] + "CC" }}><span className="w-1.5 h-1.5 rounded-full bg-white dot-running inline-block"/>Running: {state.running}</span>}
-              {state.readyQueue.length > 0 && <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-yellow-900/30 border border-yellow-700/30 text-[9px] font-bold text-yellow-400"><Clock className="w-3 h-3"/>Ready: {state.readyQueue.join(", ")}</span>}
-              {state.completed.length > 0 && <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-900/30 border border-emerald-700/30 text-[9px] font-bold text-emerald-400">✓ Done: {state.completed.join(", ")}</span>}
-              {state.notArrived.length > 0 && <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#27272A] text-[9px] font-bold text-[#52525B]">Pending: {state.notArrived.join(", ")}</span>}
-            </div>
-
-            {/* Legend */}
-            <div className="flex gap-3 text-[9px] font-mono text-[#52525B] flex-wrap">
-              {processes.map(p => <span key={p.id} className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm" style={{ backgroundColor: pColors[p.id] }}/>{p.id}</span>)}
-            </div>
-          </div>
-
-          {/* Bottom: Table + Chart */}
-          <div className="flex flex-col lg:flex-row gap-4 min-h-[280px]">
-            {/* Table */}
-            <div className="flex-[2] glass-card rounded-xl overflow-hidden flex flex-col">
-              <div className="p-3 border-b border-[#27272A] bg-[#18181B]"><h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-[#71717A]">Quantitative Analysis</h2></div>
-              <div className="flex-1 overflow-x-auto">
-                <table className="w-full text-left">
-                  <thead><tr className="text-[9px] font-black uppercase text-[#52525B] border-b border-[#27272A]">
-                    <th className="px-4 py-2">Process</th><th className="px-4 py-2">Arrival</th><th className="px-4 py-2">Burst</th>
-                    {showPri && <th className="px-4 py-2">Priority</th>}
-                    <th className="px-4 py-2">Finish</th><th className="px-4 py-2">Wait</th><th className="px-4 py-2">TAT</th><th className="px-4 py-2">Response</th>
-                  </tr></thead>
-                  <tbody className="text-xs font-mono divide-y divide-[#27272A]">
-                    {result.metrics.map(m => { const p = processes.find(x => x.id === m.id)!; return (
-                      <tr key={m.id} className="hover:bg-[#18181B] transition-colors">
-                        <td className="px-4 py-2.5 font-bold" style={{ color: pColors[m.id] }}>{m.id}</td>
-                        <td className="px-4 py-2.5 text-zinc-400">{p.arrivalTime}</td>
-                        <td className="px-4 py-2.5 text-zinc-400">{p.burstTime}</td>
-                        {showPri && <td className="px-4 py-2.5 text-zinc-400">{p.priority}</td>}
-                        <td className="px-4 py-2.5 text-zinc-300">{m.completionTime}</td>
-                        <td className="px-4 py-2.5 text-zinc-500">{m.waitingTime}</td>
-                        <td className="px-4 py-2.5 text-white font-bold">{m.turnaroundTime}</td>
-                        <td className="px-4 py-2.5 text-blue-400">{m.responseTime}</td>
-                      </tr>
-                    ); })}
-                  </tbody>
-                </table>
+                  )}
+                </div>
+                
+                {/* Add process quick action */}
+                <button 
+                  onClick={() => setProcesses(generateRandomProcesses(Math.floor(Math.random() * 5) + 3))} 
+                  className="btn-primary text-xs font-bold px-4 py-2.5 rounded-none shadow-lg shadow-[#00875a]/10"
+                >
+                  <Shuffle className="w-4 h-4" /> Randomize Workload
+                </button>
               </div>
             </div>
 
-            {/* Chart */}
-            <div className="flex-1 glass-card rounded-xl p-4 flex flex-col gap-3 min-w-[280px]">
-              <div className="flex items-center gap-2"><BarChart2 className="w-4 h-4 text-[#71717A]"/><h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-[#71717A]">Algorithm Comparison</h2></div>
-              <div className="flex-1 w-full min-h-[220px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={compData} margin={{ top:10,right:10,left:-20,bottom:0 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#27272A"/>
-                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize:9,fill:'#71717A',fontWeight:'bold' }} dy={10}/>
-                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize:9,fill:'#71717A' }}/>
-                    <RTooltip cursor={{ fill:'#18181B' }} contentStyle={{ backgroundColor:'#18181B',borderRadius:'4px',border:'1px solid #27272A',color:'#E4E4E7',fontSize:'10px',fontFamily:'monospace' }}/>
-                    <Legend wrapperStyle={{ paddingTop:'10px',fontSize:'9px',fontWeight:'bold' }}/>
-                    <Bar dataKey="avgTAT" name="Avg TAT" fill="#3B82F6" radius={[2,2,0,0]} barSize={14}/>
-                    <Bar dataKey="avgWT" name="Avg WT" fill="#6366F1" radius={[2,2,0,0]} barSize={14}/>
-                  </BarChart>
-                </ResponsiveContainer>
+            {/* Active Algorithm Horizontal Status Bar */}
+            <div className="relative overflow-hidden bg-gradient-to-r from-[#00875a] to-[#005c3d] text-white p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-lg shadow-[#00875a]/10 shrink-0">
+              <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full blur-3xl pointer-events-none" />
+              
+              <div className="flex items-center gap-4">
+                {/* Micro-chip representation */}
+                <div className="hidden md:flex w-10 h-7 bg-white/20 border border-white/10 items-center justify-center text-[9px] font-mono tracking-widest text-white/70">
+                  CORE
+                </div>
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-[#a3ffd6]/85">Active Algorithm</p>
+                  <h3 className="text-lg font-bold tracking-tight">{algorithm}</h3>
+                </div>
+              </div>
+
+              <div className="hidden sm:block h-8 w-px bg-white/15" />
+
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-[#a3ffd6]/65">Parameters</p>
+                <p className="text-sm font-mono font-bold">
+                  {algorithm === "RR" && `Time Quantum = ${quantumRR}`}
+                  {algorithm === "MLFQ" && `Q0 = ${quantumQ0}, Q1 = ${quantumQ1}`}
+                  {algorithm !== "RR" && algorithm !== "MLFQ" && "Default Core Parameters"}
+                </p>
+              </div>
+
+              <div className="hidden sm:block h-8 w-px bg-white/15" />
+
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-[#a3ffd6]/65">Mode</p>
+                <span className="text-xs font-bold bg-white/10 px-2 py-0.5">{info.type}</span>
+              </div>
+
+              <div className="hidden sm:block h-8 w-px bg-white/15" />
+
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-mono text-[#a3ffd6]/65 uppercase">Status</span>
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-xs font-mono font-bold text-white/90">v1.0.0</span>
               </div>
             </div>
-          </div>
-        </section>
-      </main>
 
-      <footer className="h-8 bg-[#0A0A0B] border-t border-[#27272A] px-5 flex items-center justify-between text-[8px] font-bold uppercase tracking-widest text-[#3F3F46] shrink-0">
-        <div className="flex gap-4"><span>CPU Scheduling Simulator</span><span className="text-[#3B82F6]">{algorithm} — {info.name}</span></div>
-        <div className="flex gap-4"><span>Ticks: {totalTime}</span><span>Processes: {processes.length}</span><span>CPU: {result.cpuUtilization.toFixed(0)}%</span></div>
-      </footer>
+            <div className="flex flex-col lg:flex-row gap-6 min-h-0">
+              {/* SIDEBAR COLUMN (Left side of content area) */}
+              <aside className="w-full lg:w-80 grid grid-cols-1 md:grid-cols-3 lg:flex lg:flex-col gap-6 shrink-0">
+
+                {/* Card 2: Configuration */}
+                <div className="glass-card rounded-none p-5 flex flex-col gap-4">
+                  <h2 className="section-label">Configuration</h2>
+                  <div className="flex flex-col gap-2">
+                    <label className="text-[11px] font-bold uppercase text-[#5c6378] tracking-wide">Algorithm</label>
+                    <div className="flex gap-1.5">
+                      <select value={algorithm} onChange={(e) => setAlgorithm(e.target.value)} className="select-field flex-1">
+                        <optgroup label="Standard Algorithms">
+                          {ALGORITHMS.map((a) => (
+                            <option key={a} value={a}>
+                              {a} — {ALGORITHM_INFO[a].name}
+                            </option>
+                          ))}
+                        </optgroup>
+                        {customAlgorithms.length > 0 && (
+                          <optgroup label="Custom Saved Algorithms">
+                            {customAlgorithms.map((ca) => (
+                              <option key={ca.name} value={ca.name}>
+                                {ca.name}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                      </select>
+                      {customAlgorithms.some((ca) => ca.name === algorithm) && (
+                        <button
+                          onClick={() => removeCustomAlgorithm(algorithm)}
+                          className="px-3 bg-rose-50 hover:bg-rose-100 text-rose-600 transition-colors text-xs font-bold border border-rose-200"
+                          title="Delete Custom Algorithm"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {algorithm === "RR" && (
+                    <div className="flex flex-col gap-2">
+                      <label className="text-[11px] font-bold uppercase text-[#5c6378] tracking-wide">Time Quantum</label>
+                      <input type="number" min="1" value={quantumRR} onChange={(e) => setQuantumRR(+e.target.value)} className="input-field" />
+                    </div>
+                  )}
+                  {algorithm === "MLFQ" && (
+                    <div className="flex gap-3">
+                      {[
+                        ["Q0", quantumQ0, setQuantumQ0],
+                        ["Q1", quantumQ1, setQuantumQ1],
+                      ].map(([l, v, s]: any) => (
+                        <div key={l} className="flex-1 flex flex-col gap-2">
+                          <label className="text-[11px] font-bold uppercase text-[#5c6378] tracking-wide">{l} Quantum</label>
+                          <input type="number" min="1" value={v} onChange={(e) => s(+e.target.value)} className="input-field" />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Card 3: Process Workload List */}
+                <div className="glass-card rounded-none p-5 flex flex-col gap-3">
+                  <h2 className="section-label">Process Workload</h2>
+                  <div className={`grid ${showPri ? "grid-cols-5" : "grid-cols-4"} gap-2 text-[10px] uppercase font-bold text-[#5c6378] px-3`}>
+                    <span>ID</span>
+                    <span className="text-center">Arrival</span>
+                    <span className="text-center">Burst</span>
+                    {showPri && <span className="text-center">Priority</span>}
+                    <span />
+                  </div>
+                  <div className="flex flex-col gap-2 max-h-[160px] overflow-y-auto custom-scrollbar pr-1">
+                    {processes.map((p) => (
+                      <div key={p.id} className={`process-row group grid ${showPri ? "grid-cols-5" : "grid-cols-4"} gap-2 items-center text-[13px]`}>
+                        <span className="font-bold font-mono" style={{ color: pColors[p.id] }}>
+                          {p.id}
+                        </span>
+                        <span className="text-center text-[#475569] font-mono">{p.arrivalTime}</span>
+                        <span className="text-center text-[#475569] font-mono">{p.burstTime}</span>
+                        {showPri && <span className="text-center text-[#475569] font-mono">{p.priority}</span>}
+                        <button onClick={() => removeProcess(p.id)} disabled={processes.length <= 1} className="ml-auto bg-slate-100 hover:bg-red-500 hover:text-white text-[#475569] p-1 rounded-none opacity-0 group-hover:opacity-100 transition-all disabled:hidden">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <form onSubmit={addProcess} className="flex flex-col gap-2 mt-1">
+                    <div className={`process-row grid ${showPri ? "grid-cols-5" : "grid-cols-4"} gap-2 items-center`}>
+                      <span className="text-[#5c6378] font-mono font-bold text-xs">NEW</span>
+                      <input type="number" min="0" value={newArr} onChange={(e) => setNewArr(+e.target.value)} className="w-full bg-[#f8fafc] border border-slate-200 rounded-none text-center text-[13px] p-2 text-slate-800 outline-none focus:border-[#00875a] transition-colors" required />
+                      <input type="number" min="1" value={newBur} onChange={(e) => setNewBur(+e.target.value)} className="w-full bg-[#f8fafc] border border-slate-200 rounded-none text-center text-[13px] p-2 text-slate-800 outline-none focus:border-[#00875a] transition-colors" required />
+                      {showPri && <input type="number" min="1" value={newPri} onChange={(e) => setNewPri(+e.target.value)} className="w-full bg-[#f8fafc] border border-slate-200 rounded-none text-center text-[13px] p-2 text-slate-800 outline-none focus:border-[#00875a] transition-colors" required />}
+                    </div>
+                    <button type="submit" className="w-full py-2.5 flex items-center justify-center gap-1.5 border-2 border-dashed border-slate-200 rounded-none text-[12px] font-bold uppercase text-[#5c6378] hover:bg-slate-50 hover:text-[#1e293b] hover:border-slate-300 transition-all">
+                      <Plus className="w-4 h-4" />Add Process
+                    </button>
+                  </form>
+                </div>
+
+                {/* Card 4: Simulator Stats */}
+                <div className="stats-panel rounded-none p-5 flex flex-col gap-4">
+                  <h2 className="section-label text-[#00875a]">Simulation Metrics</h2>
+                  
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="text-center pb-2 border-b border-[#10b981]/10">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-[#00875a] mb-1">Avg Wait Time</div>
+                      <div className="text-2xl font-black text-[#1e293b]">{result.avgWaitingTime.toFixed(2)}</div>
+                      <span className="text-[9px] font-bold text-[#00875a] bg-[#00875a]/10 px-1.5 py-0.5 rounded-none mt-1 inline-block">Ticks</span>
+                    </div>
+                    <div className="text-center pb-2 border-b border-[#10b981]/10">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-[#00875a] mb-1">Avg Turnaround</div>
+                      <div className="text-2xl font-black text-[#1e293b]">{result.avgTurnaroundTime.toFixed(2)}</div>
+                      <span className="text-[9px] font-bold text-[#00875a] bg-[#00875a]/10 px-1.5 py-0.5 rounded-none mt-1 inline-block">Ticks</span>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-[#00875a] mb-1">Avg Response</div>
+                      <div className="text-2xl font-black text-[#1e293b]">{result.avgResponseTime.toFixed(2)}</div>
+                      <span className="text-[9px] font-bold text-[#00875a] bg-[#00875a]/10 px-1.5 py-0.5 rounded-none mt-1 inline-block">Ticks</span>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-[#00875a] mb-1">CPU Utilization</div>
+                      <div className="text-2xl font-black text-[#00875a]">{result.cpuUtilization.toFixed(0)}%</div>
+                      <span className="text-[9px] font-bold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-none mt-1 inline-block">Active</span>
+                    </div>
+                  </div>
+                  
+                  <div className="flex flex-col gap-1.5 text-[11px] text-[#475569] font-mono border-t border-[#10b981]/15 pt-3">
+                    <div className="flex justify-between">
+                      <span className="font-bold">Throughput:</span>
+                      <span className="text-[#00875a] font-bold">{result.throughput.toFixed(3)} p/ms</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="font-bold">Context Switches:</span>
+                      <span className="text-amber-600 font-bold">{result.contextSwitches}</span>
+                    </div>
+                  </div>
+                </div>
+              </aside>
+
+              {/* MAIN CONTENT AREA */}
+              <div className="flex-1 flex flex-col gap-6 min-w-0">
+                {/* Algorithm Info */}
+                {showInfo && (
+                  <div className="glass-card rounded-none p-5 flex items-start gap-4 animate-slide-up">
+                    <Info className="w-6 h-6 text-[#00875a] shrink-0 mt-0.5" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-3 mb-2">
+                        <span className="text-base font-bold text-[#1e293b]">{info.name}</span>
+                        <span className={`badge text-[10px] ${info.type === "Preemptive" ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-700" : "bg-yellow-500/10 border border-yellow-500/20 text-yellow-700"}`}>{info.type}</span>
+                      </div>
+                      <p className="text-[13px] text-[#475569] leading-relaxed">{info.desc}</p>
+                    </div>
+                    <button onClick={() => setShowInfo(false)} className="text-[#94a3b8] hover:text-[#1e293b] text-sm transition-colors">✕</button>
+                  </div>
+                )}
+                {!showInfo && (
+                  <button onClick={() => setShowInfo(true)} className="text-[11px] text-[#94a3b8] hover:text-[#475569] self-start transition-colors font-bold uppercase tracking-wider">
+                    Show algorithm info ↓
+                  </button>
+                )}
+
+                {/* Gantt Card */}
+                <div className="glass-card rounded-none p-5 flex flex-col gap-4">
+                  <div className="flex justify-between items-center">
+                    <h2 className="section-label">Gantt Chart Timeline</h2>
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setTick((t) => Math.max(0, t - 1))} className="p-1 rounded-none hover:bg-slate-100 text-[#475569] transition-colors">
+                        <SkipBack className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => { if (tick >= totalTime) setTick(0); setPlaying(!playing); }} className={`p-1.5 rounded-none transition-colors ${playing ? "bg-[#00875a] text-white" : "hover:bg-slate-100 text-[#475569]"}`}>
+                        {playing ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                      </button>
+                      <button onClick={() => setTick((t) => Math.min(totalTime, t + 1))} className="p-1 rounded-none hover:bg-slate-100 text-[#475569] transition-colors">
+                        <SkipForward className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => { setTick(0); setPlaying(false); }} className="p-1 rounded-none hover:bg-slate-100 text-[#475569] transition-colors">
+                        <RotateCcw className="w-4 h-4" />
+                      </button>
+                      <select value={speed} onChange={(e) => setSpeed(+e.target.value)} className="bg-slate-50 border border-slate-200 rounded-none text-xs px-2.5 py-1 text-[#475569] ml-2 outline-none font-bold">
+                        {[1, 2, 4, 8].map((s) => (
+                          <option key={s} value={s}>
+                            {s}x Speed
+                          </option>
+                        ))}
+                      </select>
+                      <span className="text-xs font-mono text-[#475569] font-bold ml-3 bg-slate-100 px-2 py-1 rounded-none">
+                        t = {tick} / {totalTime}
+                      </span>
+                    </div>
+                  </div>
+
+                  {result.executionLog.length > 0 ? (
+                    <div className="w-full overflow-x-auto custom-scrollbar border border-slate-100 bg-slate-50">
+                      <div className="relative h-24 flex min-w-[768px] lg:min-w-0 w-full">
+                        {totalTime > 0 && <div className="gantt-cursor" style={{ left: `${(tick / totalTime) * 100}%`, transition: playing ? "none" : "left 0.15s ease" }} />}
+                        {result.executionLog.map((b, i) => {
+                          const w = ((b.endTime - b.startTime) / totalTime) * 100;
+                          const idle = b.processId === "IDLE";
+                          const cs = b.processId === "SWITCH";
+                          const past = b.endTime <= tick;
+                          const active = b.startTime <= tick && tick < b.endTime;
+                          
+                          const bgStyle = cs 
+                            ? { background: 'repeating-linear-gradient(45deg, #cbd5e1, #cbd5e1 4px, #e2e8f0 4px, #e2e8f0 8px)' } 
+                            : { backgroundColor: idle ? "transparent" : pColors[b.processId] };
+
+                          return (
+                            <div
+                              key={`${b.processId}-${b.startTime}-${i}`}
+                              style={{ width: `${w}%`, ...bgStyle, opacity: past ? 0.95 : active ? 1 : 0.2 }}
+                              className={`h-full border-r border-black/5 flex flex-col items-center justify-center transition-opacity duration-200 ${(idle || cs) ? "border border-dashed border-slate-200" : ""} ${active && !(idle || cs) ? "ring-2 ring-[#00875a] ring-inset" : ""}`}
+                              title={`${b.processId}: ${b.startTime}→${b.endTime}`}
+                            >
+                              {!(idle || cs) && w > 3 && (
+                                <div className="flex flex-col items-center justify-center min-w-0 w-full px-0.5 truncate">
+                                  <span className="text-[10px] font-black text-white drop-shadow-sm truncate">{b.processId}</span>
+                                  <span className="text-[8px] text-white/90 font-mono font-bold truncate">
+                                    {b.startTime}-{b.endTime}
+                                  </span>
+                                </div>
+                              )}
+                              {idle && w > 3 && <span className="text-[8px] font-black text-[#94a3b8] uppercase truncate">Idle</span>}
+                              {cs && w > 3 && <span className="text-[8px] font-black text-amber-600 uppercase truncate">CS</span>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="h-24 bg-slate-50 border border-dashed border-slate-200 rounded-none flex items-center justify-center">
+                      <span className="text-xs font-bold uppercase text-[#94a3b8]">No simulation data — add processes to begin</span>
+                    </div>
+                  )}
+
+                  {/* Playback slider */}
+                  <input type="range" min={0} max={totalTime} value={tick} onChange={(e) => { setTick(+e.target.value); setPlaying(false); }} className="w-full mt-1" />
+
+                  {/* Ready Queue Viz */}
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-[#94a3b8]">State @t={tick}:</span>
+                    {state.running && (
+                      <span className="status-chip text-white" style={{ backgroundColor: pColors[state.running] + "E6" }}>
+                        <span className="w-2 h-2 rounded-full bg-white dot-running inline-block" />
+                        Running: {state.running}
+                      </span>
+                    )}
+                    {state.readyQueue.length > 0 && (
+                      <span className="status-chip bg-yellow-50 border border-yellow-200 text-yellow-700">
+                        <Clock className="w-3.5 h-3.5" />Ready: {state.readyQueue.join(", ")}
+                      </span>
+                    )}
+                    {state.completed.length > 0 && <span className="status-chip bg-emerald-50 border border-emerald-200 text-emerald-700">✓ Done: {state.completed.join(", ")}</span>}
+                    {state.notArrived.length > 0 && <span className="status-chip bg-slate-50 border border-slate-200 text-[#94a3b8]">Pending: {state.notArrived.join(", ")}</span>}
+                  </div>
+
+                  {/* Legend */}
+                  <div className="flex gap-4 text-[11px] font-mono text-[#94a3b8] flex-wrap border-t border-slate-100 pt-2.5">
+                    {processes.map((p) => (
+                      <span key={p.id} className="flex items-center gap-1.5 font-bold">
+                        <span className="w-2.5 h-2.5 rounded-none" style={{ backgroundColor: pColors[p.id] }} />
+                        {p.id}
+                      </span>
+                    ))}
+                    {settings.contextSwitchTime > 0 && (
+                      <span className="flex items-center gap-1.5 font-bold">
+                        <span className="w-2.5 h-2.5 rounded-sm" style={{ background: 'repeating-linear-gradient(45deg, #cbd5e1, #cbd5e1 2px, #e2e8f0 2px, #e2e8f0 4px)' }} />
+                        CS (Overhead)
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Bottom Stats & Data */}
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                  {/* Table */}
+                  <div className="glass-card rounded-none overflow-hidden flex flex-col min-h-[300px]">
+                    <div className="p-4 border-b border-slate-100 bg-[#f8fafc]">
+                      <h2 className="section-label">Quantitative Analysis</h2>
+                    </div>
+                    <div className="flex-1 overflow-x-auto custom-scrollbar">
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Process</th>
+                            <th>Arrival</th>
+                            <th>Burst</th>
+                            {showPri && <th>Priority</th>}
+                            <th>Finish</th>
+                            <th>Wait</th>
+                            <th>TAT</th>
+                            <th>Response</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {result.metrics.map((m) => {
+                            const p = processes.find((x) => x.id === m.id)!;
+                            return (
+                              <tr key={m.id}>
+                                <td className="font-bold" style={{ color: pColors[m.id] }}>
+                                  {m.id}
+                                </td>
+                                <td className="text-[#475569]">{p.arrivalTime}</td>
+                                <td className="text-[#475569]">{p.burstTime}</td>
+                                {showPri && <td className="text-[#475569]">{p.priority}</td>}
+                                <td className="text-[#1e293b] font-bold">{m.completionTime}</td>
+                                <td className="text-[#475569]">{m.waitingTime}</td>
+                                <td className="text-[#00875a] font-bold">{m.turnaroundTime}</td>
+                                <td className="text-purple-600 font-bold">{m.responseTime}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* Chart */}
+                  <div className="glass-card rounded-none p-5 flex flex-col gap-4 min-h-[300px]">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-100">
+                      <div className="flex items-center gap-2">
+                        <BarChart2 className="w-5 h-5 text-[#475569]" />
+                        <h2 className="section-label">Algorithm Comparison</h2>
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {ALGORITHMS.map((a) => {
+                          const active = selectedCompAlgos.includes(a);
+                          return (
+                            <button
+                              key={a}
+                              onClick={() => {
+                                setSelectedCompAlgos((prev) =>
+                                  prev.includes(a) ? prev.filter((x) => x !== a) : [...prev, a]
+                                );
+                              }}
+                              className={`px-2 py-0.5 text-[9px] font-black tracking-wider uppercase transition-colors ${
+                                active
+                                  ? "bg-[#00875a]/10 text-[#00875a] border border-[#00875a]/30"
+                                  : "bg-slate-50 text-slate-400 border border-slate-200 hover:bg-slate-100"
+                              }`}
+                            >
+                              {a}
+                            </button>
+                          );
+                        })}
+                        {customAlgorithms.map((ca) => {
+                          const active = selectedCompAlgos.includes(ca.name);
+                          return (
+                            <button
+                              key={ca.name}
+                              onClick={() => {
+                                setSelectedCompAlgos((prev) =>
+                                  prev.includes(ca.name) ? prev.filter((x) => x !== ca.name) : [...prev, ca.name]
+                                );
+                              }}
+                              className={`px-2 py-0.5 text-[9px] font-black tracking-wider uppercase transition-colors ${
+                                active
+                                  ? "bg-amber-50 text-[#d97706] border border-amber-200"
+                                  : "bg-slate-50 text-slate-400 border border-slate-200 hover:bg-slate-100"
+                              }`}
+                            >
+                              {ca.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div className="flex-1 w-full min-h-[200px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={compData} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}>
+                          <defs>
+                            <linearGradient id="colorAvgTAT" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#00875a" stopOpacity={0.4}/>
+                              <stop offset="95%" stopColor="#00875a" stopOpacity={0.0}/>
+                            </linearGradient>
+                            <linearGradient id="colorAvgWT" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.4}/>
+                              <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0.0}/>
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(0,0,0,0.04)" />
+                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#475569', fontWeight: 'bold' }} dy={10} />
+                          <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#475569' }} />
+                          <RTooltip cursor={{ stroke: '#00875a', strokeWidth: 1 }} contentStyle={{ backgroundColor: '#ffffff', borderRadius: '0px', border: '1px solid rgba(0,0,0,0.06)', color: '#1e293b', fontSize: '12px', fontFamily: 'JetBrains Mono, monospace', boxShadow: '0 4px 20px rgba(0,0,0,0.05)' }} />
+                          <Legend wrapperStyle={{ paddingTop: '12px', fontSize: 11, fontWeight: 'bold' }} />
+                          <Area type="monotone" dataKey="avgTAT" name="Avg TAT" stroke="#00875a" strokeWidth={2} fillOpacity={1} fill="url(#colorAvgTAT)" />
+                          <Area type="monotone" dataKey="avgWT" name="Avg WT" stroke="#8b5cf6" strokeWidth={2} fillOpacity={1} fill="url(#colorAvgWT)" />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+          </main>
+
+          <footer className="h-auto md:h-10 bg-white border-t border-slate-100 px-4 md:px-8 py-3 md:py-0 flex flex-col md:flex-row items-center justify-between gap-2.5 text-[10px] font-bold uppercase tracking-wider text-[#94a3b8] shrink-0 font-mono">
+            <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-5 text-center">
+              <span>CPU Scheduling Simulator</span>
+              <span className="text-[#00875a]">
+                {algorithm} — {info.name}
+              </span>
+            </div>
+            <div className="flex flex-wrap justify-center gap-4 sm:gap-5">
+              <span>Ticks: {totalTime}</span>
+              <span>Processes: {processes.length}</span>
+              <span>CPU: {result.cpuUtilization.toFixed(0)}%</span>
+            </div>
+          </footer>
+        </div>
+      </div>
     </div>
   );
 }

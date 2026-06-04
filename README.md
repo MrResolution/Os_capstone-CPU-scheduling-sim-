@@ -1,7 +1,7 @@
-# CPU<span style="color:#3B82F6">Sim</span>.OS — CPU Scheduling Simulator
+# CPU<span style="color:#3B82F6">sim</span> — CPU Scheduling Simulator
 
 <div align="center">
-  <img src="logo.png" width="128" height="128" alt="CPUSim.OS Logo" />
+  <img src="logo.png" width="128" height="128" alt="CPUsim Logo" />
   <p><em>A modern, high-fidelity, hybrid CPU scheduling simulator featuring React/Electron & Python/CustomTkinter desktop UIs.</em></p>
 </div>
 
@@ -9,7 +9,7 @@
 
 ## 📖 Introduction
 
-**CPUSim.OS** is a comprehensive educational simulation tool designed to model, visualize, and analyze classical Operating System CPU scheduling algorithms. 
+**CPUsim** is a comprehensive educational simulation tool designed to model, visualize, and analyze classical Operating System CPU scheduling algorithms. 
 
 The project stands out with its **dual-engine, hybrid architecture**, allowing you to run it either as a state-of-the-art Web/Electron application styled with modern glassmorphic elements, or as a native, lightweight Python Tkinter desktop application. Both engines share identical execution behavior and mathematical precision.
 

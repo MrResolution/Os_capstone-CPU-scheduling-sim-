@@ -6,7 +6,7 @@ function createWindow() {
     width: 1280,
     height: 800,
     icon: path.join(__dirname, "icon.ico"),
-    title: "CPUSim.OS - CPU Scheduling Simulator",
+    title: "CPUsim - CPU Scheduling Simulator",
     autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: false,

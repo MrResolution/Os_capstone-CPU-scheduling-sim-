@@ -1,6 +1,6 @@
-# CPUSim.OS — CPU Scheduling Simulator
+# CPUsim — CPU Scheduling Simulator
 
-CPUSim.OS is a modern, high-fidelity, hybrid CPU Scheduling Simulator. It allows computer science students and system engineers to visualize, analyze, and compare various CPU scheduling algorithms in real-time.
+CPUsim is a modern, high-fidelity, hybrid CPU Scheduling Simulator. It allows computer science students and system engineers to visualize, analyze, and compare various CPU scheduling algorithms in real-time.
 
 The application features a hybrid architecture, offering both a **gorgeous dark-themed Web App** (built with React, TypeScript, and Vite, wrapped in Electron for cross-platform desktop deployment) and a **native Python Desktop App** (built with CustomTkinter and Matplotlib).
 
@@ -75,7 +75,7 @@ $$\begin{aligned}
 
 ```mermaid
 graph TD
-    A[CPUSim.OS Root] --> B[Vite + React Frontend]
+    A[CPUsim Root] --> B[Vite + React Frontend]
     A --> C[Python Desktop App]
     
     B --> B1[src/App.tsx - React App Shell]

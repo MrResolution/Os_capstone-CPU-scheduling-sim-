@@ -1,4 +1,4 @@
-"""UI component builders for CPUSim.OS desktop app."""
+"""UI component builders for CPUsim desktop app."""
 import customtkinter as ctk
 import csv, random, io, os
 from PIL import Image
@@ -27,11 +27,12 @@ def make_header(parent, app):
     else:
         title_padx = 16
 
-    ctk.CTkLabel(header, text="CPUSim.OS", font=ctk.CTkFont(size=22, weight="bold"), text_color="white").pack(side="left", padx=(title_padx, 4))
+    ctk.CTkLabel(header, text="CPUsim", font=ctk.CTkFont(size=22, weight="bold"), text_color="white").pack(side="left", padx=(title_padx, 4))
     ctk.CTkLabel(header, text="CPU Scheduling Simulator", font=ctk.CTkFont(size=11), text_color=TEXT_DIM).pack(side="left", padx=4)
 
     btn_frame = ctk.CTkFrame(header, fg_color="transparent")
     btn_frame.pack(side="right", padx=12)
+    ctk.CTkButton(btn_frame, text="⚙ Settings", width=80, height=28, fg_color=BG_INPUT, border_width=1, border_color=BORDER, text_color=TEXT_MID, hover_color="#27272A", font=ctk.CTkFont(size=10, weight="bold"), command=app.open_settings_window).pack(side="right", padx=4)
     ctk.CTkButton(btn_frame, text="⬇ CSV", width=60, height=28, fg_color=BG_INPUT, border_width=1, border_color=BORDER, text_color=TEXT_MID, hover_color="#27272A", font=ctk.CTkFont(size=10, weight="bold"), command=app._export_csv).pack(side="right", padx=4)
     ctk.CTkButton(btn_frame, text="🎲 Random", width=80, height=28, fg_color=BG_INPUT, border_width=1, border_color=BORDER, text_color=TEXT_MID, hover_color="#27272A", font=ctk.CTkFont(size=10, weight="bold"), command=app._random_processes).pack(side="right", padx=4)
 

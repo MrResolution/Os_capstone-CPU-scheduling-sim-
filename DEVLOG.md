@@ -1,4 +1,4 @@
-# 🪵 CPUSim.OS — Development Log
+# 🪵 CPUsim — Development Log
 
 A chronological journey of building a modern CPU Scheduling Simulator.
 

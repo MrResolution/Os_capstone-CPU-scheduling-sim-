@@ -1,5 +1,5 @@
 {
-  "name": "cpusim-os",
+  "name": "cpusim",
   "author": "Sabo <sabo@example.com>",
   "description": "CPU Scheduling Simulator",
   "private": true,
@@ -13,11 +13,13 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "electron:dev": "vite build && electron .",
-    "electron:build": "vite build && electron-builder -w -l"
+    "electron:build": "vite build && electron-builder -w -l",
+    "electron:build:win": "vite build && electron-builder --win",
+    "electron:build:linux": "vite build && electron-builder --linux"
   },
   "build": {
-    "appId": "com.cpusim.os",
-    "productName": "CPUSim.OS",
+    "appId": "com.cpusim",
+    "productName": "CPUsim",
     "directories": {
       "output": "release"
     },
@@ -26,10 +28,11 @@
       "electron/**/*"
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "signAndEditExecutable": false
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": ["deb"],
       "icon": "build/icons"
     },
     "nsis": {
@@ -37,7 +40,7 @@
       "allowToChangeInstallationDirectory": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "CPUSim.OS"
+      "shortcutName": "CPUsim"
     }
   },
   "dependencies": {

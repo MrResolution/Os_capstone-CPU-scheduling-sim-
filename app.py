@@ -1,4 +1,4 @@
-"""CPUSim.OS - CPU Scheduling Simulator (Python Desktop App)"""
+"""CPUsim - CPU Scheduling Simulator (Python Desktop App)"""
 import customtkinter as ctk
 import matplotlib
 matplotlib.use("TkAgg")
@@ -18,7 +18,7 @@ ctk.set_default_color_theme("blue")
 class CPUSimApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("CPUSim.OS - CPU Scheduling Simulator")
+        self.title("CPUsim - CPU Scheduling Simulator")
         self.geometry("1360x820")
         self.minsize(1100, 700)
         self.configure(fg_color=BG_DARK)
@@ -31,6 +31,8 @@ class CPUSimApp(ctk.CTk):
         self.new_arrival = ctk.IntVar(value=4)
         self.new_burst = ctk.IntVar(value=1)
         self.new_priority = ctk.IntVar(value=1)
+        self.context_switch_time = ctk.IntVar(value=0)
+        self.tie_breaker = ctk.StringVar(value="PID")
 
         # Playback state
         self.current_tick = 0
@@ -49,6 +51,8 @@ class CPUSimApp(ctk.CTk):
         self.rr_quantum.trace_add("write", lambda *_: self._on_config_change())
         self.q0_quantum.trace_add("write", lambda *_: self._on_config_change())
         self.q1_quantum.trace_add("write", lambda *_: self._on_config_change())
+        self.context_switch_time.trace_add("write", lambda *_: self._on_config_change())
+        self.tie_breaker.trace_add("write", lambda *_: self._on_config_change())
         self._on_config_change()
 
     def _on_config_change(self):
@@ -59,9 +63,56 @@ class CPUSimApp(ctk.CTk):
             self.play_job = None
         self._refresh()
 
+    def open_settings_window(self):
+        if hasattr(self, "settings_win") and self.settings_win.winfo_exists():
+            self.settings_win.focus()
+            return
+        
+        self.settings_win = ctk.CTkToplevel(self)
+        self.settings_win.title("Simulation Settings")
+        self.settings_win.geometry("340x260")
+        self.settings_win.resizable(False, False)
+        self.settings_win.configure(fg_color=BG_DARK)
+        self.settings_win.attributes("-topmost", True)
+        
+        ctk.CTkLabel(self.settings_win, text="SIMULATION SETTINGS", font=ctk.CTkFont(size=12, weight="bold"), text_color="white").pack(pady=(12, 16))
+        
+        cs_frame = ctk.CTkFrame(self.settings_win, fg_color="transparent")
+        cs_frame.pack(fill="x", padx=20, pady=6)
+        
+        lbl_frame = ctk.CTkFrame(cs_frame, fg_color="transparent")
+        lbl_frame.pack(fill="x")
+        ctk.CTkLabel(lbl_frame, text="Context Switch Overhead", font=ctk.CTkFont(size=10, weight="bold"), text_color=TEXT_MID).pack(side="left")
+        
+        val_lbl = ctk.CTkLabel(lbl_frame, text=str(self.context_switch_time.get()), font=ctk.CTkFont(size=11, weight="bold"), text_color=BLUE)
+        val_lbl.pack(side="right")
+        
+        def on_slider_change(val):
+            ival = int(float(val))
+            self.context_switch_time.set(ival)
+            val_lbl.configure(text=str(ival))
+            
+        slider = ctk.CTkSlider(cs_frame, from_=0, to=5, number_of_steps=5, fg_color=BORDER, progress_color=BLUE, button_color=BLUE, button_hover_color="#2563EB", command=on_slider_change)
+        slider.set(self.context_switch_time.get())
+        slider.pack(fill="x", pady=4)
+        
+        tb_frame = ctk.CTkFrame(self.settings_win, fg_color="transparent")
+        tb_frame.pack(fill="x", padx=20, pady=8)
+        ctk.CTkLabel(tb_frame, text="Tie-Breaker Strategy", font=ctk.CTkFont(size=10, weight="bold"), text_color=TEXT_MID).pack(anchor="w")
+        
+        tb_menu = ctk.CTkOptionMenu(tb_frame, variable=self.tie_breaker, values=["PID", "FIFO", "LIFO"], fg_color=BG_INPUT, button_color="#27272A", width=260)
+        tb_menu.pack(pady=4)
+        
+        ctk.CTkButton(self.settings_win, text="Apply & Close", fg_color=BLUE, hover_color="#2563EB", font=ctk.CTkFont(size=11, weight="bold"), command=self.settings_win.destroy).pack(pady=(12, 10))
+
     def _refresh(self):
         algo = self.algorithm.get()
-        self.result = run_simulation(self.processes, algo, self.rr_quantum.get(), self.q0_quantum.get(), self.q1_quantum.get())
+        from scheduler import SimulatorSettings
+        settings = SimulatorSettings(
+            context_switch_time=self.context_switch_time.get(),
+            tie_breaker=self.tie_breaker.get()
+        )
+        self.result = run_simulation(self.processes, algo, self.rr_quantum.get(), self.q0_quantum.get(), self.q1_quantum.get(), settings)
         self.total_time = self.result.execution_log[-1].end_time if self.result.execution_log else 0
         self._refresh_quantum_controls(algo)
         self._refresh_info(algo)
@@ -250,6 +301,7 @@ class CPUSimApp(ctk.CTk):
             return
         colors_map = {p.id: COLORS[i % len(COLORS)] for i, p in enumerate(self.processes)}
         colors_map["IDLE"] = "#222222"
+        colors_map["SWITCH"] = "#333333"
         for block in self.result.execution_log:
             dur = block.end_time - block.start_time
             c = colors_map.get(block.process_id, "#555")
@@ -257,13 +309,19 @@ class CPUSimApp(ctk.CTk):
             active = block.start_time <= self.current_tick < block.end_time
             future = block.start_time > self.current_tick
             alpha = 0.9 if past else (1.0 if active else 0.15)
+            hatch = None
             if block.process_id == "IDLE":
                 alpha = 0.2 if not future else 0.05
-            ec = BLUE if active and block.process_id != "IDLE" else "#000"
-            lw = 2 if active and block.process_id != "IDLE" else 0.5
-            ax.barh(0, dur, left=block.start_time, height=0.6, color=c, alpha=alpha, edgecolor=ec, linewidth=lw)
-            if block.process_id != "IDLE" and dur >= 1 and not future:
+            elif block.process_id == "SWITCH":
+                alpha = 0.6 if not future else 0.15
+                hatch = "//"
+            ec = BLUE if active and block.process_id not in ("IDLE", "SWITCH") else "#000"
+            lw = 2 if active and block.process_id not in ("IDLE", "SWITCH") else 0.5
+            ax.barh(0, dur, left=block.start_time, height=0.6, color=c, alpha=alpha, edgecolor=ec, linewidth=lw, hatch=hatch)
+            if block.process_id not in ("IDLE", "SWITCH") and dur >= 1 and not future:
                 ax.text(block.start_time + dur / 2, 0, f"{block.process_id}\n{block.start_time}-{block.end_time}", ha="center", va="center", fontsize=7, color="white", fontweight="bold", alpha=alpha)
+            elif block.process_id == "SWITCH" and dur >= 1 and not future:
+                ax.text(block.start_time + dur / 2, 0, "CS", ha="center", va="center", fontsize=7, color="#E0A050", fontweight="bold", alpha=alpha)
         # Cursor line
         if self.total_time > 0:
             ax.axvline(x=self.current_tick, color=BLUE, linewidth=2, alpha=0.8)
@@ -350,8 +408,13 @@ class CPUSimApp(ctk.CTk):
         ax.clear()
         ax.set_facecolor(BG_CARD)
         data = []
+        from scheduler import SimulatorSettings
+        settings = SimulatorSettings(
+            context_switch_time=self.context_switch_time.get(),
+            tie_breaker=self.tie_breaker.get()
+        )
         for algo in ALGORITHMS:
-            res = run_simulation(self.processes, algo, self.rr_quantum.get(), self.q0_quantum.get(), self.q1_quantum.get())
+            res = run_simulation(self.processes, algo, self.rr_quantum.get(), self.q0_quantum.get(), self.q1_quantum.get(), settings)
             data.append({"name": algo, "tat": round(res.avg_turnaround_time, 2), "wt": round(res.avg_waiting_time, 2)})
         x = np.arange(len(data))
         w = 0.35
